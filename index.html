@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Word Calculator</title>
+<style>
+  :root {
+    --bg: #f6f4ef; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66;
+    --line: #e2dfd7; --accent: #2f5d50; --accent-ink: #ffffff; --bar: #cfe0d9; --err: #a23b2a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 620px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.5px; }
+  .sub { color: var(--muted); margin: 0 0 28px; font-size: 15px; line-height: 1.5; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+  form { display: flex; gap: 8px; }
+  input { flex: 1; min-width: 0; font-size: 18px; padding: 12px 14px; border: 1px solid var(--line);
+          border-radius: 10px; outline: none; }
+  input:focus { border-color: var(--accent); }
+  button { font-size: 16px; padding: 12px 18px; border: 0; border-radius: 10px;
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button:disabled { opacity: .6; cursor: default; }
+  .examples { margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .examples span { font-size: 13px; color: var(--muted); align-self: center; margin-right: 2px; }
+  .chip { font-size: 13px; padding: 5px 10px; border-radius: 999px; background: var(--bg);
+          color: var(--ink); border: 1px solid var(--line); }
+  #out { margin-top: 20px; }
+  .eq { font-size: 15px; color: var(--muted); margin-bottom: 12px; }
+  .row { display: grid; grid-template-columns: 28px 1fr 64px; align-items: center; gap: 10px;
+         padding: 8px 0; border-top: 1px solid var(--line); }
+  .row:first-of-type { border-top: 0; }
+  .rank { color: var(--muted); font-size: 14px; }
+  .word { font-size: 18px; position: relative; }
+  .word.top { font-weight: 700; font-size: 22px; }
+  .bar { height: 6px; background: var(--bar); border-radius: 3px; margin-top: 4px; }
+  .score { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: 14px; }
+  .error { color: var(--err); }
+  .note { margin-top: 24px; font-size: 13px; color: var(--muted); line-height: 1.6; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Word Calculator</h1>
+  <p class="sub">Add and subtract words with pre-trained GloVe embeddings.<br>
+     Use lowercase English words with + and −.</p>
+
+  <div class="card">
+    <form id="f">
+      <input id="q" autocomplete="off" spellcheck="false" placeholder="king + woman - man" value="king + woman - man">
+      <button id="go" type="submit">=</button>
+    </form>
+    <div class="examples">
+      <span>Try:</span>
+      <button class="chip" type="button">paris + japan - france</button>
+      <button class="chip" type="button">walked + swim - walk</button>
+      <button class="chip" type="button">went + eat - go</button>
+    </div>
+    <div id="out"></div>
+  </div>
+
+  <p class="note">The front end only reads your input and shows the result.
+     The embeddings (100,000 words × 50 numbers) and the calculation are on the server.</p>
+</main>
+
+<script>
+// Front end: reads the input, sends the words to the back end, shows the result.
+
+// "king + woman - man"  ->  { positive: ["king","woman"], negative: ["man"] }
+function parse(text) {
+  const tokens = text.toLowerCase().replace(/[−–—]/g, "-")
+                     .match(/[+-]|[^\s+-]+/g) || [];
+  const positive = [], negative = [];
+  let sign = "+";
+  for (const t of tokens) {
+    if (t === "+" || t === "-") { sign = t; continue; }
+    (sign === "+" ? positive : negative).push(t);
+    sign = "+";
+  }
+  return { positive, negative };
+}
+
+const out = document.getElementById("out");
+const go = document.getElementById("go");
+const q = document.getElementById("q");
+
+async function run() {
+  const body = parse(q.value);
+  if (!body.positive.length && !body.negative.length) return;
+  go.disabled = true;
+  out.innerHTML = '<div class="eq">Calculating…</div>';
+  try {
+    const res = await fetch("/api/calculate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    });
+    const data = await res.json();
+    if (data.error) {
+      out.innerHTML = '<div class="error"></div>';
+      out.firstChild.textContent = data.error;
+      return;
+    }
+    const expr = [...body.positive.map((w, i) => (i ? "+ " : "") + w),
+                  ...body.negative.map(w => "− " + w)].join(" ");
+    out.innerHTML = "";
+    const eq = document.createElement("div");
+    eq.className = "eq"; eq.textContent = expr + " =";
+    out.appendChild(eq);
+    data.results.forEach((r, i) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = '<div class="rank"></div><div><div class="word"></div><div class="bar"></div></div><div class="score"></div>';
+      row.querySelector(".rank").textContent = i + 1;
+      const w = row.querySelector(".word");
+      w.textContent = r.word; if (i === 0) w.classList.add("top");
+      row.querySelector(".bar").style.width = Math.max(0, r.similarity) * 100 + "%";
+      row.querySelector(".score").textContent = r.similarity.toFixed(3);
+      out.appendChild(row);
+    });
+  } catch (e) {
+    out.innerHTML = '<div class="error">Could not reach the server.</div>';
+  } finally {
+    go.disabled = false;
+  }
+}
+
+document.getElementById("f").addEventListener("submit", e => { e.preventDefault(); run(); });
+document.querySelectorAll(".chip").forEach(c =>
+  c.addEventListener("click", () => { q.value = c.textContent; run(); }));
+</script>
+</body>
+</html>
